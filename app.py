@@ -216,7 +216,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if st.button("🔄 Reset pipeline", width='content'):
+if st.button("🔄 Reset pipeline", width="content"):
     reset_pipeline()
     st.session_state.current_stage = 0
     st.rerun()
@@ -261,7 +261,7 @@ if stage_idx == 0:
     c4.metric("Duplicate rows", f"{int(raw_df.duplicated().sum()):,}")
 
     st.markdown("#### Preview")
-    st.dataframe(raw_df.head(100), width='stretch')
+    st.dataframe(raw_df.head(100), width="stretch")
 
     st.markdown("#### Automatic column type detection")
     st.caption(
@@ -325,10 +325,10 @@ elif stage_idx == 1:
     col1, col2 = st.columns([2, 1])
     with col1:
         st.markdown("#### Missing values per column")
-        st.dataframe(column_report, width='stretch', height=280)
+        st.dataframe(column_report, width="stretch", height=280)
     with col2:
         st.markdown("#### Rows by missing-value count")
-        st.dataframe(row_summary, width='stretch', height=280)
+        st.dataframe(row_summary, width="stretch", height=280)
 
     st.markdown("#### Duplicate detection")
     resolve_ids = st.checkbox(
@@ -452,7 +452,7 @@ elif stage_idx == 2:
         c3.metric("Quality score before", f"{q_before['overall_score']}%")
         c4.metric("Quality score after", f"{q_after['overall_score']}%")
 
-        st.dataframe(st.session_state.clean_df.head(100), width='stretch')
+        st.dataframe(st.session_state.clean_df.head(100), width="stretch")
 
     if st.session_state.stage_reached >= 3:
         nav1, nav2 = st.columns([1, 1])
@@ -500,7 +500,7 @@ elif stage_idx == 3:
         if "overall_outlier" in st.session_state.clean_df.columns:
             st.markdown("#### Flagged records")
             flagged = st.session_state.clean_df[st.session_state.clean_df["overall_outlier"]]
-            st.dataframe(flagged.head(200), width='stretch')
+            st.dataframe(flagged.head(200), width="stretch")
 
             drop_outliers = st.checkbox("Remove flagged outlier rows from the cleaned dataset")
             if drop_outliers and st.button("Apply outlier removal"):
@@ -558,7 +558,7 @@ elif stage_idx == 4:
                 st.bar_chart(df[selected_num].dropna().value_counts(bins=20).sort_index())
             with colb:
                 st.markdown("**Summary statistics**")
-                st.dataframe(df[numeric_cols].describe().T, width='stretch')
+                st.dataframe(df[numeric_cols].describe().T, width="stretch")
         else:
             st.write("No continuous columns detected.")
 
@@ -573,7 +573,7 @@ elif stage_idx == 4:
     with tab3:
         if len(numeric_cols) > 1:
             corr = df[numeric_cols].corr(numeric_only=True)
-            st.dataframe(corr.style.background_gradient(cmap="RdBu_r", vmin=-1, vmax=1), width='stretch')
+            st.dataframe(corr.style.background_gradient(cmap="RdBu_r", vmin=-1, vmax=1), width="stretch")
         else:
             st.write("Not enough numeric columns for a correlation matrix.")
 
@@ -614,7 +614,7 @@ elif stage_idx == 5:
             data=rp.export_dataframe(export_df, "csv"),
             file_name=f"{project_name.replace(' ', '_')}_cleaned.csv",
             mime="text/csv",
-           width='stretch',
+            width="stretch",
         )
     with export_cols[1]:
         st.download_button(
@@ -622,7 +622,7 @@ elif stage_idx == 5:
             data=rp.export_dataframe(export_df, "excel"),
             file_name=f"{project_name.replace(' ', '_')}_cleaned.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width='stretch',
+            width="stretch",
         )
 
     st.markdown("#### Export data quality & EDA report")
@@ -644,7 +644,7 @@ elif stage_idx == 5:
             data=st.session_state["_html_report"],
             file_name=f"{project_name.replace(' ', '_')}_report.html",
             mime="text/html",
-            width='stretch',
+            width="stretch",
         )
 
     st.balloons()
