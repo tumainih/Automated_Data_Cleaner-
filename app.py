@@ -194,6 +194,7 @@ if st.session_state.raw_df is None:
     st.stop()
 
 steps = [
+
     "Upload & Profile",
     "Missing Values & Duplicates",
     "Standardize & Impute",
@@ -439,8 +440,32 @@ elif stage_idx == 2:
 
         st.session_state.clean_df = df_std
         st.session_state.action_log = log
+
+        # Synthetic evaluation for imputation accuracy (full-evaluation requirement)
+        try:
+            evaluation_results = st.session_state.get("evaluation_results") or {}
+            imputation_eval = pl.evaluate_imputation_synthetic(
+                df,
+                df_std,
+                profile["Identity"],
+                profile["Date"],
+                profile["Continuous"],
+                profile["Categorical"],
+                mask_fraction=0.10,
+                seed=42,
+                min_samples=10,
+            )
+            evaluation_results["imputation"] = imputation_eval
+            evaluation_results["html_block_imputation"] = imputation_eval.get("html_block")
+            st.session_state["evaluation_results"] = evaluation_results
+        except Exception as e:
+            evaluation_results = st.session_state.get("evaluation_results") or {}
+            evaluation_results["imputation_error"] = str(e)
+            st.session_state["evaluation_results"] = evaluation_results
+
         st.session_state.stage_reached = max(st.session_state.stage_reached, 3)
         st.success("Standardization and imputation complete.")
+
 
     if st.session_state.action_log:
         with st.expander("📋 View cleaning action log", expanded=True):
@@ -494,8 +519,32 @@ elif stage_idx == 3:
             )
         st.session_state.clean_df = flagged_df
         st.session_state.outlier_report = outlier_results
+
+        # Synthetic evaluation for outlier detection (full-evaluation requirement)
+        try:
+            evaluation_results = st.session_state.get("evaluation_results") or {}
+            outlier_eval = pl.evaluate_outlier_detection_synthetic(
+                flagged_df,
+                profile["Identity"],
+                profile["Date"],
+                profile["Continuous"],
+                profile["Categorical"],
+                contamination=contamination,
+                outlier_fraction=0.05,
+                seed=42,
+                min_injected=5,
+            )
+            evaluation_results["outlier_detection"] = outlier_eval
+            evaluation_results["html_block_outlier"] = outlier_eval.get("html_block")
+            st.session_state["evaluation_results"] = evaluation_results
+        except Exception as e:
+            evaluation_results = st.session_state.get("evaluation_results") or {}
+            evaluation_results["outlier_error"] = str(e)
+            st.session_state["evaluation_results"] = evaluation_results
+
         st.session_state.stage_reached = max(st.session_state.stage_reached, 4)
         st.success("Outlier detection complete.")
+
 
     if st.session_state.outlier_report:
         rep = st.session_state.outlier_report
@@ -638,8 +687,9 @@ elif stage_idx == 5:
     if st.button("📄 Generate HTML report", type="primary"):
         with st.spinner("Building report..."):
             html_report = rp.build_html_report(
-                project_name, raw_df, df, profile, q_before, q_after, st.session_state.action_log
+                project_name, raw_df, df, profile, q_before, q_after, st.session_state.action_log, evaluation_results=st.session_state.get("evaluation_results")
             )
+
         st.session_state["_html_report"] = html_report
         st.success("Report generated.")
 

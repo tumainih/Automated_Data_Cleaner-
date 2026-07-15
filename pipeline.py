@@ -53,11 +53,12 @@ def detect_date_columns(df: pd.DataFrame) -> list:
         s = df[col].dropna().astype(str)
         if len(s) == 0:
             continue
-        name_check = any(x in col.lower() for x in ["date", "dob", "birth", "time", "created", "updated"])
+        # Date logic (per feedback): use ONLY parsing ratio; do NOT rely on name keywords.
         date_ratio = pd.to_datetime(s, errors="coerce", format="mixed").notna().mean()
-        if name_check or date_ratio >= 0.90:
+        if date_ratio >= 0.90:
             dates.append(col)
     return dates
+
 
 
 def detect_continuous_columns(df: pd.DataFrame, exclude: list = None) -> list:
@@ -483,7 +484,227 @@ def sort_rows_by_completeness(df, identity_cols, date_cols, continuous_cols, cat
 # 8. DATA QUALITY SCORE
 # =========================================================
 
+def _mask_values_for_evaluation(df: pd.DataFrame, cols: list, mask_fraction: float, seed: int = 42) -> tuple[pd.DataFrame, dict]:
+    """Create a synthetic evaluation scenario by masking (setting to NaN) a fraction
+    of existing non-null values for the provided columns.
+
+    Returns: (masked_df, mask_meta) where mask_meta maps col -> list of row indices masked."""
+    rng = np.random.default_rng(seed)
+    masked_df = df.copy()
+    mask_meta: dict[str, list[int]] = {}
+    for col in cols:
+        if col not in masked_df.columns:
+            continue
+        non_null_idx = masked_df.index[masked_df[col].notna()].to_numpy()
+        if non_null_idx.size == 0:
+            continue
+        n_mask = max(1, int(round(mask_fraction * non_null_idx.size)))
+        chosen = rng.choice(non_null_idx, size=min(n_mask, non_null_idx.size), replace=False)
+        chosen = chosen.tolist()
+        masked_df.loc[chosen, col] = np.nan
+        mask_meta[col] = chosen
+    return masked_df, mask_meta
+
+
+def evaluate_imputation_synthetic(
+    df_before_imputation: pd.DataFrame,
+    df_after_imputation: pd.DataFrame,
+    identity_cols: list,
+    date_cols: list,
+    continuous_cols: list,
+    categorical_cols: list,
+    mask_fraction: float = 0.1,
+    seed: int = 42,
+    min_samples: int = 10,
+) -> dict:
+    """Synthetic imputation evaluation via random masking.
+
+    We assume `df_after_imputation` is the output of the imputation pipeline.
+    We will:
+      1) mask a fraction of *known* values in `df_after_imputation` (treat it as ground truth)
+      2) run the existing imputation functions to estimate the masked values
+      3) compare estimates with the ground truth (the original values before masking).
+
+    For simplicity and robustness, we reuse existing pipeline functions:
+    - fill_continuous_missing_rf
+    - fill_categorical_missing_rf
+    - fill_missing_dates (mode/ffill/bfill/unknown handled as 'mode' here)
+    - fill_missing_identity (keeps 'Unknown_<row>' placeholder)
+
+    Returns dict with computed metrics."""
+    # Use post-imputation df as ground-truth for evaluation
+    df_gt = df_after_imputation.copy()
+
+    # Choose evaluation columns
+    cont_eval = [c for c in continuous_cols if c in df_gt.columns]
+    cat_eval = [c for c in categorical_cols if c in df_gt.columns]
+
+    rng_cols = cont_eval + cat_eval
+    if not rng_cols:
+        return {"html_block": "<p>No continuous/categorical columns available for synthetic imputation evaluation.</p>"}
+
+    masked_df, mask_meta = _mask_values_for_evaluation(df_gt, rng_cols, mask_fraction, seed=seed)
+
+    # Run imputations on masked_df
+    df_work = masked_df.copy()
+    # identity and dates are not usually masked for evaluation; but their functions are safe.
+    if identity_cols:
+        df_work, _ = fill_missing_identity(df_work, identity_cols)
+    if date_cols:
+        df_work, _ = fill_missing_dates(df_work, date_cols, strategy="mode")
+    if cont_eval:
+        df_work, _ = fill_continuous_missing_rf(df_work, cont_eval, identity_cols, date_cols, min_training_ratio=0.0)
+    if cat_eval:
+        df_work, _ = fill_categorical_missing_rf(df_work, cat_eval, identity_cols, date_cols, min_training_ratio=0.0)
+
+    # Metrics
+    metrics = {}
+
+    # Continuous metrics
+    cont_metrics = []
+    for col in cont_eval:
+        if col not in mask_meta:
+            continue
+        rows = mask_meta[col]
+        if len(rows) < min_samples:
+            continue
+        y_true = df_gt.loc[rows, col].astype(float).to_numpy()
+        y_pred = df_work.loc[rows, col].astype(float).to_numpy()
+        mae = float(np.mean(np.abs(y_true - y_pred)))
+        rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+        cont_metrics.append({"column": col, "mae": mae, "rmse": rmse, "n": len(rows)})
+
+    if cont_metrics:
+        metrics["continuous"] = cont_metrics
+        metrics["continuous_overall_mae"] = float(np.mean([m["mae"] for m in cont_metrics]))
+        metrics["continuous_overall_rmse"] = float(np.mean([m["rmse"] for m in cont_metrics]))
+
+    # Categorical metrics
+    cat_metrics = []
+    for col in cat_eval:
+        if col not in mask_meta:
+            continue
+        rows = mask_meta[col]
+        if len(rows) < min_samples:
+            continue
+        y_true = df_gt.loc[rows, col].astype(str).to_numpy()
+        y_pred = df_work.loc[rows, col].astype(str).to_numpy()
+        acc = float(np.mean(y_true == y_pred))
+        cat_metrics.append({"column": col, "accuracy": acc, "n": len(rows)})
+
+    if cat_metrics:
+        metrics["categorical"] = cat_metrics
+        metrics["categorical_overall_accuracy"] = float(np.mean([m["accuracy"] for m in cat_metrics]))
+
+    # Render HTML block
+    def _fmt_float(x):
+        return f"{x:.4f}" if isinstance(x, (int, float, np.floating)) else str(x)
+
+    html = ""
+    if cont_metrics:
+        html += f"<p><b>Continuous imputation (synthetic)</b>: overall MAE={_fmt_float(metrics['continuous_overall_mae'])}, overall RMSE={_fmt_float(metrics['continuous_overall_rmse'])}</p>"
+    else:
+        html += "<p>No sufficient continuous samples for synthetic imputation evaluation.</p>"
+
+    if cat_metrics:
+        html += f"<p><b>Categorical imputation (synthetic)</b>: overall accuracy={_fmt_float(metrics['categorical_overall_accuracy'])}</p>"
+    else:
+        html += "<p>No sufficient categorical samples for synthetic imputation evaluation.</p>"
+
+    # Also include per-column details (limited)
+    if cont_metrics:
+        html += "<h4>Continuous per-column</h4><ul>" + "".join(
+            f"<li>{m['column']}: n={m['n']}, MAE={_fmt_float(m['mae'])}, RMSE={_fmt_float(m['rmse'])}</li>" for m in cont_metrics[:10]
+        ) + "</ul>"
+    if cat_metrics:
+        html += "<h4>Categorical per-column</h4><ul>" + "".join(
+            f"<li>{m['column']}: n={m['n']}, accuracy={_fmt_float(m['accuracy'])}</li>" for m in cat_metrics[:10]
+        ) + "</ul>"
+
+    return {**metrics, "html_block": html}
+
+
+def evaluate_outlier_detection_synthetic(
+    df_after_imputation: pd.DataFrame,
+    identity_cols: list,
+    date_cols: list,
+    continuous_cols: list,
+    categorical_cols: list,
+    contamination: float = 0.05,
+    outlier_fraction: float = 0.05,
+    seed: int = 42,
+    min_injected: int = 5,
+) -> dict:
+    """Synthetic outlier evaluation by injecting outliers into continuous columns.
+
+    We create a copy of df_after_imputation (treated as ground truth),
+    inject outliers by amplifying selected rows in continuous columns,
+    then run Isolation Forest detection and compare detected rows with injected labels.
+
+    Returns dict with precision/recall/F1 for row-level outlier detection."""
+    rng = np.random.default_rng(seed)
+    df_work = df_after_imputation.copy()
+
+    cont_eval = [c for c in continuous_cols if c in df_work.columns]
+    if not cont_eval:
+        return {"html_block": "<p>No continuous columns available for synthetic outlier evaluation.</p>"}
+
+    n_rows = len(df_work)
+    if n_rows == 0:
+        return {"html_block": "<p>Empty dataset; no outlier evaluation.</p>"}
+
+    n_inject = max(min_injected, int(round(outlier_fraction * n_rows)))
+    n_inject = min(n_inject, n_rows)
+    injected_rows = rng.choice(np.arange(n_rows), size=n_inject, replace=False)
+    injected_rows = injected_rows.tolist()
+    injected_set = set(injected_rows)
+
+    # Inject: for each selected continuous column, multiply by a large factor
+    factor = 6.0
+    for col in cont_eval:
+        col_vals = df_work[col]
+        # only modify non-null
+        idx = [i for i in injected_rows if pd.notna(col_vals.iloc[i])]
+        if not idx:
+            continue
+        df_work.loc[idx, col] = df_work.loc[idx, col] * factor
+
+    detected_df, outlier_results = detect_outliers_isolation_forest(
+        df_work, cont_eval, categorical_cols, contamination=contamination
+    )
+
+    if "overall_outlier" not in detected_df.columns:
+        return {"html_block": "<p>Outlier detector did not produce overall_outlier flags.</p>"}
+
+    detected_rows = set(detected_df.index[detected_df["overall_outlier"]].tolist())
+
+    tp = len(detected_rows & injected_set)
+    fp = len(detected_rows - injected_set)
+    fn = len(injected_set - detected_rows)
+
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+
+    html = (
+        f"<p><b>Outlier detection (synthetic)</b>: injected={len(injected_set)}, detected={len(detected_rows)}</p>"
+        f"<p>Precision={precision:.4f}, Recall={recall:.4f}, F1={f1:.4f}</p>"
+    )
+    return {
+        "injected_outlier_rows": len(injected_set),
+        "detected_outlier_rows": len(detected_rows),
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "html_block": html,
+    }
+
+
 def data_quality_score(df: pd.DataFrame) -> dict:
+
     total_cells = df.shape[0] * df.shape[1] if df.shape[0] and df.shape[1] else 1
     completeness = 1 - (df.isna().sum().sum() / total_cells)
     uniqueness = 1 - (df.duplicated().sum() / df.shape[0]) if df.shape[0] else 1
