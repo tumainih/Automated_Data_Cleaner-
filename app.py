@@ -187,6 +187,12 @@ if uploaded_file is not None and (
         st.session_state["_last_file"] = uploaded_file.name
         st.session_state.current_stage = 0
 
+# If no dataset is loaded, stop early BEFORE using raw_df.
+# This prevents import/runtime crashes when Streamlit tries to render the script.
+if st.session_state.raw_df is None:
+    st.info("👋 Upload a CSV or Excel dataset above to begin the guided cleaning workflow.")
+    st.stop()
+
 steps = [
     "Upload & Profile",
     "Missing Values & Duplicates",
@@ -196,6 +202,7 @@ steps = [
     "Export",
 ]
 stage_idx = st.session_state.current_stage
+
 
 stage_html = "<div class='stage-row'>"
 for idx, label in enumerate(steps):
@@ -555,7 +562,9 @@ elif stage_idx == 4:
             colh, colb = st.columns(2)
             with colh:
                 st.markdown("**Histogram**")
-                st.bar_chart(df[selected_num].dropna().value_counts(bins=20).sort_index())
+                hist_data = df[selected_num].dropna().value_counts(bins=20).sort_index()
+                hist_data.index = hist_data.index.astype(str)
+                st.bar_chart(hist_data)
             with colb:
                 st.markdown("**Summary statistics**")
                 st.dataframe(df[numeric_cols].describe().T, width="stretch")
